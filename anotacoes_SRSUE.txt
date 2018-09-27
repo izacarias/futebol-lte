@@ -1,0 +1,71 @@
+
+
+## Deletetar um IMSI da tabela PDN
+----------------------------------
+USE oai_db
+DELETE FROM pdn WHERE users_imsi='208930000000001';
+
+
+## Incluir IMSI na tabela PDN
+-----------------------------
+INSERT INTO pdn (apn, pgw_id, users_imsi, pre_emp_vul) 
+VALUES ('oai.ipv4', 3, '208930100001111', 'ENABLED');
+
+
+## Deletar um IMSI da tabela users
+----------------------------------
+DELETE FROM users WHERE imsi='208930000000001';
+
+
+## Incluir um IMSI da tabela users
+----------------------------------
+INSERT INTO users (
+    `imsi`, `msisdn`, `imei`, `imei_sv`, `ms_ps_status`, 
+    `rau_tau_timer`, `ue_ambr_ul`, `ue_ambr_dl`, `access_restriction`, `mme_cap`,
+    `mmeidentity_idmmeidentity`, `key`, `RFSP-Index`, `urrp_mme`, `sqn`, 
+    `rand`, `OPc`
+) VALUES (
+    '208930100001111', '33638060010', '353490069873319', NULL, 'PURGED', 
+    '120', '50000000', '100000000', '47', '0000000000', 
+    '46', 0x8BAF473F2F8FD09487CCCBD7097C6862, '1', '0', '0', 
+    0x00000000000000000000000000000000, '');
+
+
+
+## Atualizar key, rand e OPC (pode criar problemas)
+## OBS: Só faça se você realmente sabe o que está 
+## fazendo!!!
+-------------
+UPDATE users SET `key`=0x8BAF473F2F8FD09487CCCBD7097C6862 WHERE imsi='208930100001111';
+UPDATE users SET `rand`=0x00000000000000000000000000000000 WHERE imsi='208930100001111';
+UPDATE users SET `OPc`=0xe734f8734007d6c5ce7a0508809e7e9c WHERE imsi='208930100001111';
+INSERT INTO apn VALUES(NULL, 'futebol', 'IPv4');
+
+
+## Procedimento para verificar autenticação
+-------------------------------------------
+
+- In the SRSUE:
+	1. The 'op' field will be the same as OPERATOR_key in the hss.conf
+	2. The 'key' field will be the users.key value in the OAI MySQL database table
+
+- Update the key field and the op field in the SRSUE to the correspondig values:
+i.e.:
+	op   = 1006020f0a478bf6b699f15c062e42b3
+	k    = 8baf473f2f8fd09487cccbd7097c6862
+	
+- Go to https://www.hanewin.net/encrypt/aes/aes-test.htm
+	- Copy the "k" field value to the "Key in hex:" form field withou the 0x string.
+	- Put the OPERATOR_key in the "Plaintext in hex:" form field.
+	i.e.:
+	   "8BAF473F2F8FD09487CCCBD7097C6862" --> "Key in hex"
+	   "1006020f0a478bf6b699f15c062e42b3" --> "Plaintext in hex"
+	- Click the "Encrypt" button and make note of the "Ciphertext in hex:"
+	   "f732fa7c4a405d3378e3f45486b03c2f"
+- Visit the site http://xor.pw/
+	- Put the "Ciphertext in hex" value in the "First input" field;
+	- Put OPERATOR_key in the "Second input" field
+	   "f732fa7c4a405d3378e3f45486b03c2f" --> "I. Input"
+	   "1006020f0a478bf6b699f15c062e42b3" --> "II. Input"
+	   
+Source: http://www.softwareradiosystems.com/pipermail/srslte-users/2017-January/000716.html

@@ -1,0 +1,46 @@
+Name and ID of the container images:
+------------------------------------
+04e339339d5ac9fda9a67ae591c1202fd2cd827b202b226e7b88bd8708fe414d.tar.gz	hss-working
+fdeaaaf81313611ea2176567233e33d732db18b0d1591fb9772b7259f87f94bd.tar.gz mme-working
+c01aa72f22639ccf074339526a6ea1fad0be70d661f2b16ffcef4d5b4e152132.tar.gz spgw-working
+
+
+Instructions to generate the images (after the configuration)
+-------------------------------------------------------------
+sudo lxc stop hss
+sudo lxc publish hss --alias hss-working
+sudo lxc image export hss-working .
+
+sudo lxc stop mme
+sudo lxc publish mme --alias mme-working
+sudo lxc image export mme-working .
+
+sudo lxc stop spgw
+sudo lxc publish spgw --alias spgw-working
+sudo lxc image export spgw-working .
+
+(Use scp to copy the files)
+-----------------------------
+
+Remove the images from the source LXD
+-------------------------------------
+sudo lxc image delete hss-working
+sudo lxc image delete mme-working
+sudo lxc image delete spgw-working
+
+
++---------------------------+
+|          Server           |
++---------------------------+
+#Copy the container images to the server (.tar.gz)
+
+# To import the images in the Server
+------------------------------------
+lxc image import 04e339339d5ac9fda9a67ae591c1202fd2cd827b202b226e7b88bd8708fe414d.tar.gz --public --alias=oai-hss
+lxc image import fdeaaaf81313611ea2176567233e33d732db18b0d1591fb9772b7259f87f94bd.tar.gz --public --alias=oai-mme
+lxc image import c01aa72f22639ccf074339526a6ea1fad0be70d661f2b16ffcef4d5b4e152132.tar.gz --public --alias=oai-spgw
+
+# Configure the server to listen in the default port (8443)
+lxc config set core.https_address [::]:8443
+
+TODO: Set Firewall Rules

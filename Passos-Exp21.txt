@@ -1,0 +1,468 @@
+1. Atualizar o Kernel com o módulo Low Latency seguindo as orientações de:
+    https://github.com/muhasturk/ukupgrade
+
+    E.g.:
+    $ curl https://raw.githubusercontent.com/muhasturk/ukupgrade/master/ukupgrade > ukupgrade
+    $ chmod +x ukupgrade
+    $ sudo ./ukupgrade
+    Do you want the latest ReleaseCandidate [RC]? (y/n): n
+    Do you want the lowlatency kernel? (y/n): y
+
+    1.1 Aguardar reiniciar e verificar se o kernel foi instalado com o comando:
+    $ uname -a
+
+2. Desabilitar qualquer tipo de gerenciamento de energia do computador (p-state e c-state)
+    $ sudo sed -i '/GRUB_CMDLINE_LINUX_DEFAULT=""/c\GRUB_CMDLINE_LINUX_DEFAULT="intel_pstate=disable swapaccount=1"' /etc/default/grub
+    $ sudo update-grub
+
+3. Adicionar à lista de Blacklist o módulo do Kernel "intel_powerclamp"
+    $ echo "blacklist intel_powerclamp" | tee -a /etc/modprobe.d/blacklist.conf
+
+4. Desabilitar o escalonamento de frequência
+    $ sudo apt-get install -y cpufrequtils
+    $ echo 'GOVERNOR="performance"' | sudo tee -a /etc/default/cpufrequtils
+    $ sudo update-rc.d ondemand disable
+    $ sudo /etc/init.d/cpufrequtils restart
+
+5. Carregar o módulo de Kernel GTP na inicialização
+    $ echo "gtp" | sudo tee -a /etc/modules
+
+    5.1 Carregar o módigo GTP
+        $ sudo modprobe gtp
+    5.2 Verificar se o módulo foi carregado com sucesso
+        $ sudo lsmod | grep gtp
+        Deve apresentar uma saída semelhante a abaixo:
+            > gtp                    28672  0
+            > udp_tunnel             16384  1 gtp
+        Se o módulo não foi carregado, verificar o erro com o comando
+        $ sudo dmesg | tail 
+
+
+6. Instalar o LXD e o CRIU e iniciar o LXD   ( ######### Não fazer no Testbed ######### )
+    $ sudo apt-get install lxd lxd-client criu
+    $ sudo lxd init
+
+7. Configurar a rede da máquina virtual (SOMENTE NO AMBIENTE DE TESTE USANDO UMA VM)   ( ######### Não fazer no Testbed ######### )
+    OBS: Ver https://insights.ubuntu.com/2016/04/07/lxd-networking-lxdbr0-explained
+                        
+    ## $ sudo apt-get install bridge-utils
+    7.1 Configurar um IP para a interface de experimentos da máquina virtual
+        $ sudo ip addr add 192.168.100.1/24 dev ens8
+        $ sudo ip link set ens8 up
+
+    7.2 Adicionar o usuário atual ao grupo lxd para poder alterar configuração dos containers
+        $ sudo usermod -aG lxd $USER
+        $ sudo exit
+
+    7.3 Configurar as interfaces dos LXC para atuarem como MACVLAN para ter acesso externo
+        $ lxc profile device set default eth0 parent ens8
+        $ lxc profile device set default eth0 nictype macvlan
+
+    7.1 Configurar as interfaces de rede:
+        $ sudo vim /etc/network/interfaces
+        
+        >> # The primary network interface
+        >> auto enp0s3
+        >> # Setting the interface IP to manual to join the bridge lxdbr0
+        >> iface enp0s3 inet manual
+        >>
+        >> # The LXD bridge used as the default interface
+        >> auto lxdbr0
+        >> iface lxdbr0 inet dhcp
+        >>     bridge_ports enp0s3
+        >>
+        >> # The secondary network interface (just to get SSH working from Host)
+        >> auto enp0s8
+        >> iface enp0s8 inet dhcp
+
+8. Criar um conteiner LXD para cada um dos elementos do CORE (hss,mme,spgw):
+    8.1 Configurar o LXC/D para preservar o sources.list dos conteiner:
+        $ lxc profile set default user.user-data "apt_preserve_sources_list: true"
+
+    8.2 Iniciar os conteiners:    
+        $ sudo lxc launch ubuntu:16.04 hss
+        $ sudo lxc launch ubuntu:16.04 mme
+        $ sudo lxc launch ubuntu:16.04 spgw
+
+    8.1 Configurar IP para os containers:
+        $ sudo lxc exec hss -- dhclient -v eth0
+        $ sudo lxc exec mme -- dhclient -v eth0
+        $ sudo lxc exec spgw -- dhclient -v eth0
+
+##### /etc/hosts Sample file ####
+127.0.0.1       localhost
+192.168.5.229   hss.futebol.local hss
+192.168.5.230   mme.futebol.local mme
+192.168.5.177   spgw.futebol.local spgw
+
+
+########################################################
+###                                                  ###
+###                        HSS                       ###
+###                                                  ###
+########################################################
+
+1 . Acessar o Container e executar o "bash" para a partir dele executar a instalação.
+    $ sudo lxc exec hss bash
+
+2. Atualizar os repositórios do APT e instalar o Git, SVN e MySQL Server:
+    # sysctl -w net.ipv6.conf.all.disable_ipv6=1
+    # apt-get update
+    # apt-get install git subversion apache2 mysql-server phpmyadmin
+
+    2.1 Configurar o MySQL
+        New password for the MySQL "root" user: ""  (Manter em branco)
+
+3. Configurar o hostname (vim /etc/hostname) e os nomes dos containers
+    >> hss
+
+4. Mapear os nomes dos container para os seus IPs. Adicionar estes nomes/IPs em /etc/hosts
+    >> 127.0.0.1       localhost
+    >> 143.54.12.128   hss.futebol.local hss
+    >> 143.54.12.175   mme.futebol.local mme
+    >> 143.54.12.246   spgw.futebol.local spgw
+
+5. Clonar o repositório do EPC (Core Network) e instalar o executável do HSS:
+    # cd ~
+    # git clone https://gitlab.eurecom.fr/oai/openair-cn.git
+
+    5.1 Substituir PHP5 pelo PHP7 na lista de dependências:
+        # sed -i 's/php5/php/' ~/openair-cn/BUILD/TOOLS/build_helper
+
+    5.2 Compilar e instalar o HSS:
+        # source ~/openair-cn/oaienv; ~/openair-cn/SCRIPTS/build_hss -i
+        # source ~/openair-cn/oaienv; ~/openair-cn/SCRIPTS/build_hss
+
+6. Criar diretório para OAI (/usr/local/etc/oai) e copiar arquivos de configuração:
+    # mkdir -p /usr/local/etc/oai/freeDiameter/
+    # cp ~/openair-cn/ETC/hss.conf /usr/local/etc/oai/
+    # cp ~/openair-cn/ETC/acl.conf /usr/local/etc/oai/freeDiameter/
+    # cp ~/openair-cn/ETC/hss_fd.conf /usr/local/etc/oai/freeDiameter/
+
+7. Configurar base de dados para o HSS:
+    # ~/openair-cn/SCRIPTS/hss_db_create localhost root "" hssuser hsspass oai_db
+
+8. Configurar conexão do HSS com o banco de dados
+    # sed -i 's/@MYSQL_user@/hssuser/' /usr/local/etc/oai/hss.conf
+    # sed -i 's/@MYSQL_pass@/hsspass/' /usr/local/etc/oai/hss.config
+
+9. Configurar parâmetros do HSS e ACL do HSS
+    # sed -i 's/hss.openair4G.eur/hss.futebol.local/' /usr/local/etc/oai/freeDiameter/hss_fd.conf
+    # sed -i 's/openair4G.eur/futebol.local/' /usr/local/etc/oai/freeDiameter/hss_fd.conf
+    # echo 'ConnectPeer = "mme.futebol.local" { ConnectTo = "143.54.12.175"; No_TLS; };' | tee -a  /usr/local/etc/oai/freeDiameter/hss_fd.conf
+    # sed -i 's/*.openair4G.eur/*.futebol.local/' /usr/local/etc/oai/freeDiameter/acl.conf
+
+10. Gerar certificados para o HSS
+    #  ~/openair-cn/SCRIPTS/check_hss_s6a_certificate /usr/local/etc/oai/freeDiameter hss.futebol.local
+
+
+########################################################
+###                                                  ###
+###                        MME                       ###
+###                                                  ###
+########################################################
+
+1 . Acessar o Container e executar o "bash" para a partir dele executar a instalação.
+    $ lxc config set mme linux.kernel_modules gtp
+    $ lxc config set mme security.nesting true
+    $ lxc config device add mme mem unix-char path=/dev/mem
+    $ lxc exec mme --ln -s /bin/true /usr/local/bin/modprobe
+    $ lxc exec mme -- ln -s /bin/true /usr/local/bin/modprobe
+    $ lxc restart mme
+    $ lxc exec mme bash
+
+2. Atualizar os repositórios do APT e instalar o Git e SVN:
+    # apt-get update
+    # apt-get install git subversion mysql-server
+
+    2.1 Configurar o MySQL
+        New password for the MySQL "root" user: ""  (Manter em branco)
+
+3. Configurar o hostname (vim /etc/hostname) e os nomes dos containers
+    >> mme
+
+4. Mapear os nomes dos container para os seus IPs. Adicionar estes nomes/IPs em /etc/hosts
+    >> 127.0.0.1       localhost
+    >> 143.54.12.128   hss.futebol.local hss
+    >> 143.54.12.175   mme.futebol.local mme
+    >> 143.54.12.246   spgw.futebol.local spgw
+
+5. Clonar o repositório do EPC (Core Network) e instalar o executável do MME:
+    5.1 Clonar o repositório:
+        # cd ~
+        # git clone https://gitlab.eurecom.fr/oai/openair-cn.git
+        # git checkout develop
+        # git pull
+
+    5.2 Compilar e instalar o MME:
+        # source ~/openair-cn/oaienv; ~/openair-cn/SCRIPTS/build_mme -i
+        # source ~/openair-cn/oaienv; ~/openair-cn/SCRIPTS/build_spgw -i (???)
+        # source ~/openair-cn/oaienv; ~/openair-cn/SCRIPTS/build_mme
+
+6. Criar diretório para OAI (/usr/local/etc/oai) e copiar arquivos de configuração:
+    # mkdir -p /usr/local/etc/oai/freeDiameter/
+    # cp ~/openair-cn/etc/mme.conf /usr/local/etc/oai/
+    # cp ~/openair-cn/etc/mme_fd.conf /usr/local/etc/oai/freeDiameter/
+
+7. Configurar parâmetros do MME:
+    # sed -i 's/openair4G.eur/futebol.local/' /usr/local/etc/oai/mme.conf
+    # MY_IFACE=$(ip add show | awk '/inet.*brd/{print $NF}'); sed -i "s,^\([ ]*MME_INTERFACE_NAME_FOR_S1_MME[ ]*=[ ]*\).*,\1\"$MY_IFACE\"\;,g" /usr/local/etc/oai/mme.conf
+    # MY_IP=$(ip add show | awk '/inet.*brd/{print $2}'); sed -i "s,^\([ ]*MME_IPV4_ADDRESS_FOR_S1_MME[ ]*=[ ]*\).*,\1\"$MY_IP\"\;,g" /usr/local/etc/oai/mme.conf
+    # MY_IFACE=$(ip add show | awk '/inet.*brd/{print $NF}'); sed -i "s,^\([ ]*MME_INTERFACE_NAME_FOR_S11_MME[ ]*=[ ]*\).*,\1\"$MY_IFACE\"\;,g" /usr/local/etc/oai/mme.conf
+    # MY_IP=$(ip add show | awk '/inet.*brd/{print $2}'); sed -i "s,^\([ ]*MME_IPV4_ADDRESS_FOR_S11_MME[ ]*=[ ]*\).*,\1\"$MY_IP\"\;,g" /usr/local/etc/oai/mme.conf
+    # SPGW_IP=$(getent hosts spgw.futebol.local | awk '{ print $1"/24" ; exit }'); sed -i "s,^\([ ]*SGW_IPV4_ADDRESS_FOR_S11[ ]*=[ ]*\).*,\1\"$SPGW_IP\"\;,g" /usr/local/etc/oai/mme.conf
+
+    # sed -i "s,^\(Identity[ ]*=[ ]*\).*,\1\"mme.futebol.local\"\;,g" /usr/local/etc/oai/freeDiameter/mme_fd.conf
+    # sed -i "s,^\(Realm[ ]*=[ ]*\).*,\1\"futebol.local\"\;,g" /usr/local/etc/oai/freeDiameter/mme_fd.conf
+    
+    #################################################
+    ####                                         ####
+    #### ATENCAO ATENCAO ATENCAO ATENCAO ATENCAO ####
+    ####                                         ####
+    #################################################
+    #### TODO: Fazer o comando para configurar o ConnectPeer ao HSS (Fiz manualmente)
+
+8. Gerar certificados para o MME
+    # ~/openair-cn/SCRIPTS/check_mme_s6a_certificate /usr/local/etc/oai/freeDiameter mme.futebol.local
+
+9. Adicionar o host MME na tablea do HSS
+    9.1 Sair do container MME: 
+        # << Pressionar CTRL+D >>
+    9.2 Acessar o container HSS: 
+        $ lxc exec hss bash
+    
+    ################## On HSS Container ################## 
+    9.3 Inserir dados do host MME
+        # ~/openair-cn/SCRIPTS/hss_db_add_mme localhost hssuser hsspass oai_db mme futebol.local
+    
+        #### TODO: corrigir o SQL para inserção de HOSTS no HSS
+        Q1="INSERT INTO mmeidentity (\`mmehost\`, \`mmerealm\`, \`UE-Reachability\`) \ 
+        SELECT '$mme_hostname.$mme_realm', '$mme_realm', '0' \
+        FROM DUAL \
+        WHERE NOT EXISTS ( SELECT idmmeidentity FROM mmeidentity WHERE mmehost = '$mme_hostname.$mme_realm' )"
+
+
+
+########################################################
+###                                                  ###
+###               S-P Gateway (SPGW)                 ###
+###                                                  ###
+########################################################
+
+1 . Configurar o container:
+    $ lxc config set spgw linux.kernel_modules gtp
+    $ lxc config set spgw security.nesting true
+    $ lxc config device add spgw mem unix-char path=/dev/mem
+    $ lxc exec spgw -- ln -s /bin/true /usr/local/bin/modprobe
+    $ ------ lxc config device add spgw modules disk source=/lib/modules path=/lib/modules readonly=true (??? Talvez não é necessário, testar!)
+    $ lxc restart mme
+
+    1.1 Acessar o Container e executar o "bash" para a partir dele executar a instalação.
+        $ lxc exec spgw bash
+
+2. Atualizar os repositórios do APT e instalar o Git e SVN:
+    # apt-get update
+    # apt-get install git subversion
+
+3. Configurar o hostname (vim /etc/hostname) e os nomes dos containers
+    >> spgw
+
+4. Mapear os nomes dos container para os seus IPs. Adicionar estes nomes/IPs em /etc/hosts
+    >> 127.0.0.1       localhost
+    >> 10.0.2.16       hss.futebol.local hss
+    >> 10.0.2.18       mme.futebol.local mme
+    >> 10.0.2.17       spgw.futebol.local spgw
+
+5. Clonar o repositório do EPC (Core Network) e instalar o executável do SPGW:
+    5.1 Clonar o repositório:
+        # cd ~
+        # git clone https://gitlab.eurecom.fr/oai/openair-cn.git
+        # cd openair-cn
+        # git checkout develop
+        # git pull
+
+    5.2 Compilar e instalar o SPGW:
+        # cd ~
+        # source ~/openair-cn/oaienv; ~/openair-cn/scripts/build_mme -i
+        # source ~/openair-cn/oaienv; ~/openair-cn/scripts/build_spgw -i
+        # source ~/openair-cn/oaienv; ~/openair-cn/scripts/build_spgw
+
+6. Criar diretório para OAI (/usr/local/etc/oai) e copiar arquivos de configuração:
+    # mkdir -p /usr/local/etc/oai/
+    # cp ~/openair-cn/etc/spgw.conf /usr/local/etc/oai/
+
+7. Configurar parâmetros do SPGW:
+    # MY_IFACE=$(ip add show | awk '/inet.*brd/{print $NF}'); sed -i "s,^\([ ]*SGW_INTERFACE_NAME_FOR_S11[ ]*=[ ]*\).*,\1\"$MY_IFACE\"\;,g" /usr/local/etc/oai/spgw.conf
+    # MY_IP=$(ip add show | awk '/inet.*brd/{print $2}'); sed -i "s,^\([ ]*SGW_IPV4_ADDRESS_FOR_S11[ ]*=[ ]*\).*,\1\"$MY_IP\"\;,g" /usr/local/etc/oai/spgw.conf
+    # MY_IFACE=$(ip add show | awk '/inet.*brd/{print $NF}'); sed -i "s,^\([ ]*SGW_INTERFACE_NAME_FOR_S1U_S12_S4_UP[ ]*=[ ]*\).*,\1\"$MY_IFACE\"\;,g" /usr/local/etc/oai/spgw.conf
+    # MY_IP=$(ip add show | awk '/inet.*brd/{print $2}'); sed -i "s,^\([ ]*SGW_IPV4_ADDRESS_FOR_S1U_S12_S4_UP[ ]*=[ ]*\).*,\1\"$MY_IP\"\;,g" /usr/local/etc/oai/spgw.conf
+    # MY_IFACE=$(ip add show | awk '/inet.*brd/{print $NF}'); sed -i "s,^\([ ]*PGW_INTERFACE_NAME_FOR_SGI[ ]*=[ ]*\).*,\1\"$MY_IFACE\"\;,g" /usr/local/etc/oai/spgw.conf
+
+
+########################################################
+###                                                  ###
+###                      eNodeB                      ###
+###                                                  ###
+########################################################
+
+## The procedures were described in the following link:
+## https://gitlab.eurecom.fr/oai/openairinterface5g/wikis/HowToConnectCOTSUEwithOAIeNBNew#121-enb-and-epchss-on-different-hosts-recommended-setup
+1. Instalar cpufrequtils
+    $ sudo apt-get install git subversion iperf cpufrequtils
+
+2. Atualizar o Kernel com o módulo Low Latency seguindo as orientações de:
+    https://github.com/muhasturk/ukupgrade
+
+    E.g.:
+    $ curl https://raw.githubusercontent.com/muhasturk/ukupgrade/master/ukupgrade > ukupgrade
+    $ chmod +x ukupgrade
+    $ sudo ./ukupgrade
+    Do you want the latest ReleaseCandidate [RC]? (y/n): n
+    Do you want the lowlatency kernel? (y/n): y
+
+    1.1 Aguardar reiniciar e verificar se o kernel foi instalado com o comando:
+    $ unama -a
+
+3. Desabilitar qualquer tipo de gerenciamento de energia do computador (p-state e c-state)
+    $ sudo sed -i '/GRUB_CMDLINE_LINUX_DEFAULT=""/c\GRUB_CMDLINE_LINUX_DEFAULT="intel_pstate=disable swapaccount=1"' /etc/default/grub
+    $ sudo update-grub
+
+4. Adicionar à lista de Blacklist o módulo do Kernel "intel_powerclamp"
+    $ echo "blacklist intel_powerclamp" | tee -a /etc/modprobe.d/blacklist.conf
+
+5. Desabilitar o escalonamento de frequência
+    $ echo 'GOVERNOR="performance"' | sudo tee -a /etc/default/cpufrequtils
+    $ sudo update-rc.d ondemand disable
+    $ sudo /etc/init.d/cpufrequtils restart
+
+6. 4. Mapear os nomes dos container para os seus IPs. Adicionar estes nomes/IPs em /etc/hosts
+    >> 127.0.0.1       localhost
+    >> 127.0.1.1       enodeb.futebol.local enobeb
+    >> 10.0.2.16       hss.futebol.local hss
+    >> 10.0.2.18       mme.futebol.local mme
+    >> 10.0.2.17       spgw.futebol.local spgw
+
+6. Clonar o repositório OpenAirInterface5G (UE e eNodeB) e compilar os executáveis:
+    5.1 Clonar o repositório:
+        # cd ~
+        # git clone https://gitlab.eurecom.fr/oai/openairinterface5g.git
+        
+    5.2 Compilar e instalar o binários para eNodeB:
+        # source ~/openairinterface5g/oaienv; ~/openairinterface5g/cmake_targets/build_oai -I --eNB -x --install-system-files -w USRP
+
+7. Configurar o eNodeB:
+        # MME_IP=$(getent hosts mme.futebol.local | awk '{ print $1 ; exit }'); sed -i "s,^\([ ]*mme_ip_address[ ]*=[ ]*( { ipv4[ ]*=[ ]\).*,\1\"$MME_IP\"\;,g" ~/openairinterface5g/targets/PROJECTS/GENERIC-LTE-EPC/CONF/enb.band7.tm1.usrpb210.conf
+        # MY_IFACE=$(ip add show | awk '/inet.*brd/{print $NF}'); sed -i "s,^\([ ]*ENB_INTERFACE_NAME_FOR_S1_MME[ ]*=[ ]*\).*,\1\"$MY_IFACE\"\;,g" ~/openairinterface5g/targets/PROJECTS/GENERIC-LTE-EPC/CONF/enb.band7.tm1.usrpb210.conf
+        # MY_IP=$(ip add show | awk '/inet.*brd/{print $2}'); sed -i "s,^\([ ]*ENB_IPV4_ADDRESS_FOR_S1_MME[ ]*=[ ]*\).*,\1\"$MY_IP""\"\;,g" ~/openairinterface5g/targets/PROJECTS/GENERIC-LTE-EPC/CONF/enb.band7.tm1.usrpb210.conf
+        # MY_IFACE=$(ip add show | awk '/inet.*brd/{print $NF}'); sed -i "s,^\([ ]*ENB_INTERFACE_NAME_FOR_S1U[ ]*=[ ]*\).*,\1\"$MY_IFACE\"\;,g" ~/openairinterface5g/targets/PROJECTS/GENERIC-LTE-EPC/CONF/enb.band7.tm1.usrpb210.conf
+        # MY_IP=$(ip add show | awk '/inet.*brd/{print $2}'); sed -i "s,^\([ ]*ENB_IPV4_ADDRESS_FOR_S1U[ ]*=[ ]*\).*,\1\"$MY_IP\"\;,g" ~/openairinterface5g/targets/PROJECTS/GENERIC-LTE-EPC/CONF/enb.band7.tm1.usrpb210.conf
+
+#################################### Issues / problems with the eNodeB #################################### 
+Issue 5: USRP exits saying it received/transmitted x samples out of xxxxx:
+https://gitlab.eurecom.fr/oai/openairinterface5g/wikis/HowToConnectCOTSUEwithOAIeNBNew#issue-5-usrp-exits-saying-it-receivedtransmitted-x-samples-out-of-xxxxx
+
+
+
+#################################### Starting the EPC ####################################
+#### ON HSS:
+# ~/openair-cn/SCRIPTS/run_hss
+
+#### ON MME:
+# ~/openair-cn/scripts/run_mme
+
+#### ON SPGW:
+# ~/openair-cn/scripts/run_spgw
+
+
+
+
+########################################################
+###                                                  ###
+###                  eNodeB / SRS-LTE                ###
+###                                                  ###
+########################################################
+
+sudo apt-get install -y cmake libfftw3-dev libmbedtls-dev libboost-program-options-dev libconfig++-dev libsctp-dev
+
+git clone https://github.com/srsLTE/srsLTE.git
+cd srsLTE
+mkdir build
+cd build
+cmake ../
+make
+make test
+sudo make install
+sudo ldconfig
+
+cd ~
+cp ~/srsLTE/srsenb/enb.conf.example ~/srsLTE/srsenb/enb.conf
+cp ~/srsLTE/srsenb/rr.conf.example ~/srsLTE/srsenb/rr.conf
+cp ~/srsLTE/srsenb/sib.conf.example ~/srsLTE/srsenb/sib.conf
+cp ~/srsLTE/srsenb/drb.conf.example ~/srsLTE/srsenb/drb.conf
+
+########## Config the eNodeB #############
+
+cd ~
+sudo srsenb ~/srsLTE/srsenb/enb.conf --enb_files.sib_config ~/srsLTE/srsenb/sib.conf --enb_files.rr_config ~/srsLTE/srsenb/rr.conf --enb_files.drb_config ~/srsLTE/srsenb/drb.conf
+
+(Extra) One line command
+sudo apt-get install -y cmake libfftw3-dev libmbedtls-dev libboost-program-options-dev libconfig++-dev libsctp-dev && \
+git clone https://github.com/srsLTE/srsLTE.git && \
+cd srsLTE && \
+mkdir build && \
+cd build && \
+cmake ../ && \
+make && \
+make test && \
+sudo make install && \
+sudo ldconfig && \
+cd ~ && \
+cp ~/srsLTE/srsenb/enb.conf.example ~/srsLTE/srsenb/enb.conf && \
+cp ~/srsLTE/srsenb/rr.conf.example ~/srsLTE/srsenb/rr.conf && \
+cp ~/srsLTE/srsenb/sib.conf.example ~/srsLTE/srsenb/sib.conf && \
+cp ~/srsLTE/srsenb/drb.conf.example ~/srsLTE/srsenb/drb.conf
+
+
+########################################################
+###                                                  ###
+###                  UE / SRS-LTE                    ###
+###                                                  ###
+########################################################
+
+1. Instalar as dependências com o comando abaixo:
+    $ sudo apt-get install -y cmake libfftw3-dev libmbedtls-dev \
+        libboost-program-options-dev libconfig++-dev libsctp-dev
+
+2. Clonar o repositório do SRSLTE, verificar dependências e compilar o projeto:
+    $ git clone https://github.com/srsLTE/srsLTE.git
+    $ cd srsLTE
+    $ mkdir build
+    $ cd build
+    $ cmake ../
+    $ make
+    $ make test
+    $ sudo make install
+    $ sudo ldconfig
+
+3. Copiar os arquivos de configuração para o User Equipment:
+    $ cd ~
+    $ cp ~/srsLTE/srsue/ue.conf.example ~/srsLTE/srsue/ue.conf
+
+4. Executar o SRS-UE e aguardar conectar ao eNodeB:
+    $ cd ~
+    $ sudo srsue ~/srsLTE/srsue/ue.conf
+
+(Extra) One line command for the lazys:
+    $ sudo apt-get install -y cmake libfftw3-dev libmbedtls-dev \
+        libboost-program-options-dev libconfig++-dev libsctp-dev && \
+      git clone https://github.com/srsLTE/srsLTE.git && \
+      cd srsLTE && \
+      mkdir build && \
+      cd build && \
+      cmake ../ && \
+      make && \
+make test && \
+sudo make install && \
+sudo ldconfig && \
+cd ~ && \
+      cp ~/srsLTE/srsue/ue.conf.example ~/srsLTE/srsue/ue.conf

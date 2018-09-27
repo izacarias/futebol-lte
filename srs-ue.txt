@@ -1,0 +1,41 @@
+########################################################
+###                                                  ###
+###                  eNodeB / SRS-LTE                ###
+###                                                  ###
+########################################################
+
+sudo apt-get install -y cmake libfftw3-dev libmbedtls-dev \
+  libboost-program-options-dev libconfig++-dev libsctp-dev
+
+sudo usermod -aG usrp $USER
+
+# echo "gtp" | sudo tee -a /etc/modules
+# echo "sctp" | sudo tee -a /etc/modules
+# echo "nf_conntrack_proto_sctp" | sudo tee -a /etc/modules
+# sudo modprobe sctp
+# sudo modprobe nf_conntrack_proto_sctp
+# sudo modprobe gtp
+
+sudo reboot
+
+git clone https://github.com/srsLTE/srsLTE.git
+cd srsLTE
+mkdir build
+cd build
+cmake ../
+make
+make test
+sudo make install
+sudo srslte_install_configs.sh
+sudo ldconfig
+
+########## Config the UE #############
+sed -i "s,^\(algo[ ]*=[ ]\).*,\1milenage,g" ~/srsLTE/srsue/ue.conf
+sed -i "s,^\(op[ ]*=[ ]\).*,\11006020f0a478bf6b699f15c062e42b3,g" ~/srsLTE/srsue/ue.conf
+sed -i "s,^\(k[ ]*=[ ]\).*,\18baf473f2f8fd09487cccbd7097c6862,g" ~/srsLTE/srsue/ue.conf
+sed -i "s,^\(imsi[ ]*=[ ]\).*,\1208930000000001,g" ~/srsLTE/srsue/ue.conf
+sed -i "s,^\(imei[ ]*=[ ]\).*,\1356092040793017,g" ~/srsLTE/srsue/ue.conf
+sed -i "s,^\(apn[ ]*=[ ]\).*,\1oai.ipv4,g" ~/srsLTE/srsue/ue.conf
+
+cd ~
+sudo srsenb

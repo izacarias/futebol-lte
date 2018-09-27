@@ -1,0 +1,299 @@
+﻿#!/bin/bash
+# 1. Atualizar o Kernel com o módulo Low Latency seguindo as orientações de:
+#     https://github.com/muhasturk/ukupgrade
+#
+#     E.g.:
+if ! [ "`uname -r | grep lowlatency`" ]; then
+    curl https://raw.githubusercontent.com/muhasturk/ukupgrade/master/ukupgrade > ukupgrade
+    chmod +x ukupgrade
+    echo -e 'ny' | sudo ./ukupgrade
+fi
+
+sudo apt-get autoremove
+sudo reboot
+
+# 2. Desabilitar qualquer tipo de gerenciamento de energia do computador (p-state e c-state)
+sudo sed -i '/GRUB_CMDLINE_LINUX_DEFAULT=""/c\GRUB_CMDLINE_LINUX_DEFAULT="intel_pstate=disable swapaccount=1"' /etc/default/grub
+sudo update-grub
+
+# 3. Desativar opções de gerenciamento de energia
+echo "blacklist intel_powerclamp" | tee -a /etc/modprobe.d/blacklist.conf
+sudo apt-get install -y cpufrequtils
+echo 'GOVERNOR="performance"' | sudo tee -a /etc/default/cpufrequtils
+sudo update-rc.d ondemand disable
+sudo /etc/init.d/cpufrequtils restart
+
+# 4. Carregar o módulo e configurar para incializar com o sistema
+echo "gtp" | sudo tee -a /etc/modules
+sudo modprobe gtp
+
+# # 5. Instalar o LXD e o CRIU e iniciar o LXD   ( ######### Não fazer no Testbed ######### )
+# sudo apt-get install lxd lxd-client criu
+# sudo lxd init
+
+# 6. Configurar a rede da máquina virtual
+#     OBS: Ver https://insights.ubuntu.com/2016/04/07/lxd-networking-lxdbr0-explained
+                        
+sudo apt-get install -y bridge-utils
+# 6.1 Configurar um IP para a interface de experimentos da máquina virtual
+cat <<< '                               
+auto br1
+iface br1 inet static
+  address 192.168.100.1
+  netmask 255.255.255.0
+  bridge_ports ens8
+  bridge_stp off
+  bridge_fd 0
+  bridge_maxwait 0' | sudo tee -a /etc/network/interfaces.d/br1.conf
+sudo service networking restart
+
+
+
+# 7. Adicionar o usuário atual ao grupo lxd para poder alterar configuração dos containers
+sudo usermod -aG adm,sudo,dip,plugdev,lxd,lpadmin $USER
+exit
+
+# 7.3 Configurar as interfaces de rede dos containers
+sudo lxc profile device set default eth0 parent br1
+sudo lxc profile device set default eth0 nictype bridged
+# 7.4 Configurar LXC para preservar não alterar o arquivo sources.list
+sudo lxc profile set default user.user-data "apt_preserve_sources_list: true"
+
+# 8. Configurar a rede do host para que os containers tenham acesso 
+#    à internet e a rede de experimentacao
+sudo iptables -t nat -I POSTROUTING -s 192.168.100.0/24 -j MASQUERADE
+sudo iptables -P FORWARD ACCEPT
+sudo iptables -t nat -P POSTROUTING ACCEPT
+
+# 9. Iniciar os conteiners:    
+sudo lxc launch ubuntu:16.04 hss
+sudo lxc launch ubuntu:16.04 mme
+sudo lxc launch ubuntu:16.04 spgw
+
+# 10. Configurar os endereços IPs dos containers
+cat << EOF > hss.cfg
+auto eth0
+iface eth0 inet static
+  address 192.168.100.2
+  netmask 255.255.255.0
+  gateway 192.168.100.1
+  dns-nameserver 1.1.1.1
+  dns-nameserver 8.8.8.8
+  mtu 1430
+EOF
+sudo lxc file push hss.cfg hss/etc/network/interfaces.d/eth0.cfg
+
+cat << EOF > mme.cfg
+auto eth0
+iface eth0 inet static
+  address 192.168.100.3
+  netmask 255.255.255.0
+  gateway 192.168.100.1
+  dns-nameserver 1.1.1.1
+  dns-nameserver 8.8.8.8
+  mtu 1430
+EOF
+sudo lxc file push mme.cfg mme/etc/network/interfaces.d/eth0.cfg
+
+cat << EOF > spgw.cfg
+auto eth0
+iface eth0 inet static
+  address 192.168.100.4
+  netmask 255.255.255.0
+  gateway 192.168.100.1
+  dns-nameserver 1.1.1.1
+  dns-nameserver 8.8.8.8
+  mtu 1430
+EOF
+sudo lxc file push spgw.cfg spgw/etc/network/interfaces.d/eth0.cfg
+
+# 11. Configure the hosts files (to resolve components' name)
+##### /etc/hosts Sample file ####
+cat << EOF > hosts.conf
+127.0.0.1 localhost
+
+192.168.100.2   hss.futebol.local hss
+192.168.100.3   mme.futebol.local mme
+192.168.100.4   spgw.futebol.local spgw
+
+# The following lines are desirable for IPv6 capable hosts
+::1 ip6-localhost ip6-loopback
+fe00::0 ip6-localnet
+ff00::0 ip6-mcastprefix
+ff02::1 ip6-allnodes
+ff02::2 ip6-allrouters
+ff02::3 ip6-allhosts
+EOF
+sudo lxc file push hosts.conf hss/etc/hosts
+sudo lxc file push hosts.conf mme/etc/hosts
+sudo lxc file push hosts.conf spgw/etc/hosts
+
+sudo lxc exec hss -- rm /etc/network/interfaces.d/50-cloud-init.cfg
+sudo lxc exec mme -- rm /etc/network/interfaces.d/50-cloud-init.cfg
+sudo lxc exec spgw -- rm /etc/network/interfaces.d/50-cloud-init.cfg
+sudo lxc exec hss -- service networking restart
+sudo lxc exec mme -- service networking restart
+sudo lxc exec spgw -- service networking restart
+
+#### Setting some variables to use in the configuration process
+MME_IP=$(sudo lxc exec mme -- ip add show | awk '/inet.*brd/{print $2}')
+MME_LOCAL_IF=$(sudo lxc exec mme -- ip addr show | awk '/inet.*brd/{print $NF}')
+SPGW_IP=$(sudo lxc exec spgw -- ip add show | awk '/inet.*brd/{print $2}')
+HSS_FQDN='hss.futebol.local'
+HSS_IP=$(sudo lxc exec hss -- ip add show | awk '/inet.*brd/{print $2}')
+HSS_IP_NOMASK=$(awk '{split($0,a,"/"); print a[1]}' <<< $HSS_IP)
+
+########################################################
+###                                                  ###
+###                        HSS                       ###
+###                                                  ###
+########################################################
+# 1 . Acessar o Container e executar o "bash" para a partir dele executar a instalação.
+sudo lxc exec hss -- apt-get update
+# MySQL Server
+sudo lxc exec hss -- debconf-set-selections <<< 'mysql-server mysql-server/root_password password root'
+sudo lxc exec hss -- debconf-set-selections <<< 'mysql-server mysql-server/root_password_again password root'
+# PHPMyAdmin
+sudo lxc exec hss -- debconf-set-selections <<< 'phpmyadmin phpmyadmin/dbconfig-install boolean true'
+sudo lxc exec hss -- debconf-set-selections <<< 'phpmyadmin phpmyadmin/app-password-confirm password root'
+sudo lxc exec hss -- debconf-set-selections <<< 'phpmyadmin phpmyadmin/mysql/admin-pass password root'
+sudo lxc exec hss -- debconf-set-selections <<< 'phpmyadmin phpmyadmin/mysql/app-pass password root'
+sudo lxc exec hss -- debconf-set-selections <<< 'phpmyadmin phpmyadmin/reconfigure-webserver multiselect apache2'
+sudo lxc exec hss -- apt-get install git subversion apache2 mysql-server phpmyadmin
+# Get the sources from OAI-Git repo
+sudo lxc exec hss -- git clone https://gitlab.eurecom.fr/oai/openair-cn.git
+# 5.1 Substituir PHP5 pelo PHP7 na lista de dependências:
+sudo lxc exec hss -- sed -i 's/php5/php/' /root/openair-cn/BUILD/TOOLS/build_helper
+# 5.2 Compilar e instalar o HSS:
+sudo lxc exec hss -- source /root/openair-cn/oaienv; sudo lxc exec hss -- /root/openair-cn/SCRIPTS/build_hss -i -F
+sudo lxc exec hss --  source /root/openair-cn/oaienv; sudo lxc exec hss -- /root/openair-cn/SCRIPTS/build_hss
+# 6. Criar diretório para OAI (/usr/local/etc/oai) e copiar arquivos de configuração:
+sudo lxc exec hss -- mkdir -p /usr/local/etc/oai/freeDiameter/
+sudo lxc exec hss -- cp /root/openair-cn/ETC/hss.conf /usr/local/etc/oai/
+sudo lxc exec hss -- cp /root/openair-cn/ETC/acl.conf /usr/local/etc/oai/freeDiameter/
+sudo lxc exec hss -- cp /root/openair-cn/ETC/hss_fd.conf /usr/local/etc/oai/freeDiameter/
+# 7. Configurar base de dados para o HSS:
+sudo lxc exec hss -- /root/openair-cn/SCRIPTS/hss_db_create localhost root root hssuser hsspass oai_db
+# 8. Configurar conexão do HSS com o banco de dados
+sudo lxc exec hss -- sed -i 's/@MYSQL_user@/hssuser/' /usr/local/etc/oai/hss.conf
+sudo lxc exec hss -- sed -i 's/@MYSQL_pass@/hsspass/' /usr/local/etc/oai/hss.conf
+# 9. Configurar parâmetros do HSS e ACL do HSS
+sudo lxc exec hss -- sed -i 's/hss.openair4G.eur/hss.futebol.local/' /usr/local/etc/oai/freeDiameter/hss_fd.conf
+sudo lxc exec hss -- sed -i 's/openair4G.eur/futebol.local/' /usr/local/etc/oai/freeDiameter/hss_fd.conf
+sudo lxc exec hss -- sed -i "\$aConnectPeer = \"mme.futebol.local\" { ConnectTo = \"$MME_IP\"; No_TLS; };" /usr/local/etc/oai/freeDiameter/hss_fd.conf
+sudo lxc exec hss -- sed -i 's/*.openair4G.eur/*.futebol.local/' /usr/local/etc/oai/freeDiameter/acl.conf
+# 10. Gerar certificados para o HSS
+sudo lxc exec hss -- /root/openair-cn/SCRIPTS/check_hss_s6a_certificate /usr/local/etc/oai/freeDiameter hss.futebol.local
+# Insert the MME info into the HSS Auth table
+Q1="INSERT INTO mmeidentity (\`mmehost\`, \`mmerealm\`, \`UE-Reachability\`) SELECT 'mme.futebol.local', 'futebol.local', '0' FROM DUAL WHERE NOT EXISTS ( SELECT idmmeidentity FROM mmeidentity WHERE mmehost = 'mme.futebol.local' )"
+sudo lxc exec hss -- mysql -h localhost -u hssuser --password=hsspass oai_db -e "${Q1}"
+# Run
+sudo lxc exec hss -- sh -c "source openair-cn/oaienv; openair-cn/scripts/run_hss"
+
+########################################################
+###                                                  ###
+###                        MME                       ###
+###                                                  ###
+########################################################
+sudo lxc config set mme linux.kernel_modules gtp
+sudo lxc config set mme security.nesting true
+sudo lxc config device add mme mem unix-char path=/dev/mem
+sudo lxc exec mme -- ln -s /bin/true /usr/local/bin/modprobe
+# sudo lxc exec mme -- rm /etc/network/interfaces.d/50-cloud-init.cfg
+sudo lxc restart mme
+# 2. Atualizar os repositórios do APT e instalar o Git e SVN:
+sudo lxc exec mme -- apt-get update
+sudo lxc exec mme -- debconf-set-selections <<< 'mysql-server mysql-server/root_password password root'
+sudo lxc exec mme -- debconf-set-selections <<< 'mysql-server mysql-server/root_password_again password root'
+# PHPMyAdmin
+sudo lxc exec mme -- debconf-set-selections <<< 'phpmyadmin phpmyadmin/dbconfig-install boolean true'
+sudo lxc exec mme -- debconf-set-selections <<< 'phpmyadmin phpmyadmin/app-password-confirm password root'
+sudo lxc exec mme -- debconf-set-selections <<< 'phpmyadmin phpmyadmin/mysql/admin-pass password root'
+sudo lxc exec mme -- debconf-set-selections <<< 'phpmyadmin phpmyadmin/mysql/app-pass password root'
+sudo lxc exec mme -- debconf-set-selections <<< 'phpmyadmin phpmyadmin/reconfigure-webserver multiselect apache2'
+# Wireshark settings
+sudo lxc exec mme -- debconf-set-selections <<< 'wireshark-common wireshark-common/install-setuid boolean false'
+sudo lxc exec mme -- apt-get install -y git subversion mysql-server
+# 5. Clonar o repositório do EPC (Core Network) e instalar o executável do MME:
+sudo lxc exec mme -- git clone -b develop https://gitlab.eurecom.fr/oai/openair-cn.git
+# sudo lxc exec mme -- git checkout develop
+# sudo lxc exec mme -- git pull
+# 5.2 Compilar e instalar o MME:
+sudo lxc exec mme -- sh -c "source /root/openair-cn/oaienv; /root/openair-cn/scripts/build_mme -i -f"
+sudo lxc exec mme -- sh -c "source /root/openair-cn/oaienv; /root/openair-cn/scripts/build_spgw -i -f"
+sudo lxc exec mme -- sh -c "source /root/openair-cn/oaienv; /root/openair-cn/scripts/build_mme"
+# 6. Criar diretório para OAI (/usr/local/etc/oai) e copiar arquivos de configuração:
+sudo lxc exec mme -- mkdir -p /usr/local/etc/oai/freeDiameter/
+sudo lxc exec mme -- cp /root/openair-cn/etc/mme.conf /usr/local/etc/oai/
+sudo lxc exec mme -- cp /root/openair-cn/etc/mme_fd.conf /usr/local/etc/oai/freeDiameter/
+# 7. Configurar parâmetros do MME:
+sudo lxc exec mme -- sed -i "s/openair4G.eur/futebol.local/" /usr/local/etc/oai/mme.conf
+sudo lxc exec mme -- sed -i "s,^\([ ]*MME_INTERFACE_NAME_FOR_S1_MME[ ]*=[ ]*\).*,\1\"$MME_LOCAL_IF\"\;,g" /usr/local/etc/oai/mme.conf
+sudo lxc exec mme -- sed -i "s,^\([ ]*MME_IPV4_ADDRESS_FOR_S1_MME[ ]*=[ ]*\).*,\1\"$MME_IP\"\;,g" /usr/local/etc/oai/mme.conf
+sudo lxc exec mme -- sed -i "s,^\([ ]*MME_INTERFACE_NAME_FOR_S11_MME[ ]*=[ ]*\).*,\1\"$MME_LOCAL_IF\"\;,g" /usr/local/etc/oai/mme.conf
+sudo lxc exec mme -- sed -i "s,^\([ ]*MME_IPV4_ADDRESS_FOR_S11_MME[ ]*=[ ]*\).*,\1\"$MME_IP\"\;,g" /usr/local/etc/oai/mme.conf
+sudo lxc exec mme -- sed -i "s,^\([ ]*SGW_IPV4_ADDRESS_FOR_S11[ ]*=[ ]*\).*,\1\"$SPGW_IP\"\;,g" /usr/local/etc/oai/mme.conf
+sudo lxc exec mme -- sed -i "s,^\(Identity[ ]*=[ ]*\).*,\1\"mme.futebol.local\"\;,g" /usr/local/etc/oai/freeDiameter/mme_fd.conf
+sudo lxc exec mme -- sed -i "s,^\(Realm[ ]*=[ ]*\).*,\1\"futebol.local\"\;,g" /usr/local/etc/oai/freeDiameter/mme_fd.conf
+## Configure ConnectPeer (Comment the existent line and include a new line)
+sudo lxc exec mme -- sed -i "/ConnectPeer/s/^/#/g" /usr/local/etc/oai/freeDiameter/mme_fd.conf
+sudo lxc exec mme -- sed -i "\$aConnectPeer= \"$HSS_FQDN\" { ConnectTo = \"$HSS_IP_NOMASK\"; No_SCTP; No_IPv6; Prefer_TCP; No_TLS; port = 3868;  realm = \"futebol.local\";};" /usr/local/etc/oai/freeDiameter/mme_fd.conf
+# 8. Gerar certificados para o MME
+sudo lxc exec mme -- sh -c "/root/openair-cn/scripts/check_mme_s6a_certificate /usr/local/etc/oai/freeDiameter mme.futebol.local"
+#9. 
+sudo lxc exec mme -- sh -c "source openair-cn/oaienv; openair-cn/scripts/run_mme"
+
+########################################################
+###                                                  ###
+###               S-P Gateway (SPGW)                 ###
+###                                                  ###
+########################################################
+
+# 1 . Configurar o container:
+sudo lxc config set spgw linux.kernel_modules gtp
+sudo lxc config set spgw security.nesting true
+sudo lxc config device add spgw mem unix-char path=/dev/mem
+sudo lxc exec spgw -- ln -s /bin/true /usr/local/bin/modprobe
+sudo lxc exec spgw -- ln -s /bin/true /usr/local/bin/rmmod
+sudo lxc config device add spgw modules disk source=/lib/modules path=/lib/modules readonly=true
+sudo lxc restart spgw
+# Install required software
+sudo lxc exec spgw -- apt-get update
+sudo lxc exec spgw -- apt-get install -y git subversion
+# 3. Clonar o repositório do EPC (Core Network) e instalar o executável do SPGW:
+sudo lxc exec spgw -- git clone -b develop https://gitlab.eurecom.fr/oai/openair-cn.git
+# 4. Setting default options to the Wireshark app
+sudo lxc exec spgw -- debconf-set-selections <<< 'wireshark-common wireshark-common/install-setuid boolean false'
+sudo lxc exec spgw -- debconf-set-selections <<< 'phpmyadmin phpmyadmin/dbconfig-install boolean true'
+sudo lxc exec spgw -- debconf-set-selections <<< 'phpmyadmin phpmyadmin/app-password-confirm password root'
+sudo lxc exec spgw -- debconf-set-selections <<< 'phpmyadmin phpmyadmin/mysql/admin-pass password root'
+sudo lxc exec spgw -- debconf-set-selections <<< 'phpmyadmin phpmyadmin/mysql/app-pass password root'
+sudo lxc exec spgw -- debconf-set-selections <<< 'phpmyadmin phpmyadmin/reconfigure-webserver multiselect apache2'
+# 5. Compilar e instalar o SPGW:
+sudo lxc exec spgw -- sh -c "source /root/openair-cn/oaienv; /root/openair-cn/scripts/build_mme -i -f"
+sudo lxc exec spgw -- sh -c "source /root//openair-cn/oaienv; /root/openair-cn/scripts/build_spgw -i -f"
+sudo lxc exec spgw -- sh -c "source /root/openair-cn/oaienv; /root/openair-cn/scripts/build_spgw"
+# 6. Criar diretório para OAI (/usr/local/etc/oai) e copiar arquivos de configuração:
+sudo lxc exec spgw -- sh -c "mkdir -p /usr/local/etc/oai/"
+sudo lxc exec spgw -- sh -c "cp /root/openair-cn/etc/spgw.conf /usr/local/etc/oai/"
+# 7. Configurar parâmetros do SPGW:
+SPGW_IP=$(sudo lxc exec spgw -- ip add show | awk '/inet.*brd/{print $2}')
+SPGW_LOCAL_IF=$(sudo lxc exec spgw -- ip addr show | awk '/inet.*brd/{print $NF}')
+sudo lxc exec spgw -- sed -i "s,^\([ ]*SGW_INTERFACE_NAME_FOR_S11[ ]*=[ ]*\).*,\1\"$SPGW_LOCAL_IF\"\;,g" /usr/local/etc/oai/spgw.conf
+sudo lxc exec spgw -- sed -i "s,^\([ ]*SGW_IPV4_ADDRESS_FOR_S11[ ]*=[ ]*\).*,\1\"$SPGW_IP\"\;,g" /usr/local/etc/oai/spgw.conf
+sudo lxc exec spgw -- sed -i "s,^\([ ]*SGW_INTERFACE_NAME_FOR_S1U_S12_S4_UP[ ]*=[ ]*\).*,\1\"$SPGW_LOCAL_IF\"\;,g" /usr/local/etc/oai/spgw.conf
+sudo lxc exec spgw -- sed -i "s,^\([ ]*SGW_IPV4_ADDRESS_FOR_S1U_S12_S4_UP[ ]*=[ ]*\).*,\1\"$SPGW_IP\"\;,g" /usr/local/etc/oai/spgw.conf
+sudo lxc exec spgw -- sed -i "s,^\([ ]*PGW_INTERFACE_NAME_FOR_SGI[ ]*=[ ]*\).*,\1\"$SPGW_LOCAL_IF\"\;,g" /usr/local/etc/oai/spgw.conf
+## Run the SPGW App
+sudo lxc exec spgw -- sh -c "source openair-cn/oaienv; openair-cn/scripts/run_spgw"
+## TODO: Include the POOL of USRPs in /usr/local/etc/oai/spgw.conf
+
+#################################### Starting the EPC ####################################
+#### ON HSS:
+# /root/openair-cn/SCRIPTS/run_hss
+
+#### ON MME:
+# /root/openair-cn/scripts/run_mme
+
+#### ON SPGW:
+# ~/openair-cn/scripts/run_spgw

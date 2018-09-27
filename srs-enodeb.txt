@@ -1,0 +1,40 @@
+########################################################
+###                                                  ###
+###                  eNodeB / SRS-LTE                ###
+###                                                  ###
+########################################################
+
+sudo apt-get install -y cmake libfftw3-dev libmbedtls-dev \
+  libboost-program-options-dev libconfig++-dev libsctp-dev
+
+sudo usermod -aG usrp $USER
+
+# echo "gtp" | sudo tee -a /etc/modules
+echo "sctp" | sudo tee -a /etc/modules
+echo "nf_conntrack_proto_sctp" | sudo tee -a /etc/modules
+sudo modprobe sctp
+sudo modprobe nf_conntrack_proto_sctp
+# sudo modprobe gtp
+
+sudo reboot
+
+git clone https://github.com/srsLTE/srsLTE.git
+cd srsLTE
+mkdir build
+cd build
+cmake ../
+make
+make test
+sudo make install
+sudo srslte_install_configs.sh
+sudo ldconfig
+
+########## Config the eNodeB #############
+sed -i "s,^\(tac[ ]=[ ]*\).*,\10x0001,g" ~/.srs/enb.conf
+sed -i "s,^\(mcc[ ]=[ ]*\).*,\1208,g" ~/.srs/enb.conf
+sed -i "s,^\(mnc[ ]=[ ]*\).*,\193,g" ~/.srs/enb.conf
+sed -i "s,^\(mme_addr[ ]=[ ]*\).*,\1192\.168\.100\.3,g" ~/.srs/enb.conf
+### MY_IP=$(ip addr show EXPLTE_link0 | awk '/inet / {print $2}' | cut -d '/' -f1); sed -i "s,^\(gtp_bind_addr[ ]=[ ]*\).*,\1$MY_IP,g" ~/srsLTE/srsenb/enb.conf
+
+cd ~
+sudo srsenb

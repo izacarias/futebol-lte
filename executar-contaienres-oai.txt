@@ -1,0 +1,124 @@
+
+1 On the Virtual Machine:
+=========================
+
+1.1 Update de Kernel
+--------------------
+sudo apt -f install
+sudo apt update && sudo apt upgrade
+wget -c http://mirrors.kernel.org/ubuntu/pool/main/o/openssl/libssl1.1_1.1.0g-2ubuntu4_amd64.deb
+dpkg -i libssl1.1_1.1.0g-2ubuntu4_amd64.deb
+curl https://raw.githubusercontent.com/muhasturk/ukupgrade/master/ukupgrade > ukupgrade
+chmod +x ukupgrade
+echo -e 'ny' | sudo ./ukupgrade
+./u	
+
+1.2 Install the required packages:
+----------------------------------
+sudo apt update
+sudo apt -f install
+sudo apt install -y acl libacl1-dev squashfs-tools tar xz-utils \
+  libapparmor-dev libseccomp-dev libcap-dev thin-provisioning-tools \
+  btrfs-tools bridge-utils cgroupfs-mount cpufrequtils libsctp-dev \
+  lksctp-tools
+sudo apt-get autoremove
+sudo reboot
+
+1.3 Disable the energy management (p-state and c-state):
+--------------------------------------------------------
+sudo sed -i '/GRUB_CMDLINE_LINUX_DEFAULT=""/c\GRUB_CMDLINE_LINUX_DEFAULT="intel_pstate=disable swapaccount=1"' /etc/default/grub
+sudo update-grub
+echo "blacklist intel_powerclamp" | tee -a /etc/modprobe.d/blacklist.conf
+echo 'GOVERNOR="performance"' | sudo tee -a /etc/default/cpufrequtils
+sudo update-rc.d ondemand disable
+sudo /etc/init.d/cpufrequtils restart
+
+1.4 Load the GTP Kernel Module:
+-------------------------------
+echo "gtp" | sudo tee -a /etc/modules
+echo "sctp" | sudo tee -a /etc/modules
+echo "nf_conntrack_proto_sctp" | sudo tee -a /etc/modules
+sudo modprobe sctp
+sudo modprobe nf_conntrack_proto_sctp
+sudo modprobe gtp
+                 
+1.5 Configure the network:
+--------------------------
+- Take note of the name of the network interface with IP 192.168.2.XXX 
+  It should be experiment-name_link0.
+- Configure the network interface to use the manual configuration
+  E.g.: 
+	auto experiment-name_link0
+	iface experiment-name_link0 inet manual
+	mtu 1430
+
+- Configure a network bridge to use with LXD:
+cat <<< '                               
+auto br1
+iface br1 inet static
+  address 192.168.100.1
+  netmask 255.255.255.0
+  bridge_ports EXPLTE_link0
+  bridge_stp off
+  bridge_fd 0
+  bridge_maxwait 0' | sudo tee -a /etc/network/interfaces.d/br1.conf
+sudo service networking restart
+
+1.6 Add the current user to the following groups:
+-------------------------------------------------
+sudo usermod -aG adm,sudo,dip,plugdev,lxd,lpadmin $USER
+exit
+<<Login again via jFed>>
+
+1.7 Configure the defaut profile:
+---------------------------------
+sudo lxc profile device set default eth0 parent br1
+sudo lxc profile device set default eth0 nictype bridged
+sudo lxc profile set default user.user-data "apt_preserve_sources_list: true"
+sudo lxc profile set default linux.kernel_modules gtp
+sudo lxc profile set default linux.kernel_modules sctp
+
+1.8 Configure the network to access the internet from inside the containers
+---------------------------------------------------------------------------
+echo 1 | sudo tee /proc/sys/net/ipv4/ip_forward
+sudo iptables -t nat -I POSTROUTING -s 192.168.100.0/24 -j MASQUERADE
+sudo iptables -P FORWARD ACCEPT
+sudo iptables -t nat -P POSTROUTING ACCEPT
+
+
+2 Run the Containers on the Machine:
+====================================
+
+2.1 Add the remote container repository
+---------------------------------------
+sudo lxc remote add futebol 192.168.5.1 --public
+
+2.2 Launch the containers
+-------------------------
+sudo lxc launch futebol:oai-hss hss
+sudo lxc launch futebol:oai-mme mme
+sudo lxc launch futebol:oai-spgw spgw
+
+2.3 Configure the Kernel Modules for the containers
+---------------------------------------------------
+sudo lxc config set mme linux.kernel_modules gtp
+sudo lxc config set mme linux.kernel_modules sctp
+# sudo lxc config set mme linux.kernel_modules nf_conntrack_proto_sctp
+sudo lxc config set mme security.nesting true
+sudo lxc config device add mme mem unix-char path=/dev/mem
+
+sudo lxc config set spgw linux.kernel_modules gtp
+sudo lxc config set spgw linux.kernel_modules sctp
+# sudo lxc config set spgw linux.kernel_modules nf_conntrack_proto_sctp
+sudo lxc config set spgw security.nesting true
+sudo lxc config device add spgw mem unix-char path=/dev/mem
+
+sudo lxc restart {hss,mme,spgw}
+
+3. Run the app:
+sudo lxc exec hss -- sh -c "source openair-cn/oaienv; openair-cn/scripts/run_hss"
+sudo lxc exec mme -- sh -c "source /root/openair-cn/oaienv; /root/openair-cn/scripts/run_mme"
+sudo lxc exec spgw -- sh -c "source openair-cn/oaienv; openair-cn/scripts/run_spgw"
+
+
+
