@@ -1,0 +1,57 @@
+##
+## Linux futebol-minipc000 
+## Kernel version 4.4.0-62-generic #83-Ubuntu SMP Wed Jan 18 14:10:15 UTC 2017 x86_64 x86_64 x86_64 GNU/Linux
+## Distributor ID:	Ubuntu
+## Description:	Ubuntu 16.04.2 LTS
+## Release:	16.04
+## Codename:	xenial
+
+## Remove the old LXC/LXD installation that comes with Ubuntu
+$ sudo apt purge liblxc1 lxc-common lxcfs lxd lxd-client
+
+## Install Go Lang
+$ sudo add-apt-repository ppa:gophers/archive
+$ sudo apt-get update
+$ sudo apt-get install golang-1.10-go
+
+## Install the last version of LXC/LXD from sources and its dependecies
+$ sudo apt install acl dnsmasq-base git liblxc1 lxc-dev libacl1-dev make pkg-config rsync squashfs-tools tar xz-utils
+
+
+
+
+
+## Setup LXD for the first time use
+$ sudo lxd init
+$ sudo usermode -aG lxd $USER
+$ lxc launch ubuntu:16.04 usrp
+$ lxc exec usrp -- bash
+$ lxc exec usrp -- apt-get update
+$ lxc exec usrp -- apt-get install libuhd-dev libuhd003 uhd-host
+$ lxc exec usrp -- /usr/lib/uhd/utils/uhd_images_downloader.py
+
+## Add the desired device
+## Locate the device using lsusb
+## Ex:
+# root@usrp:~# lsusb 
+# Bus 003 Device 002: ID 3923:7814 National Instruments Corp. 
+#      |________  |_
+#               |   |
+# /dev/bus/usb/003/002
+
+$ lxc config device add usrp usrp_b210 unix-char path=/dev/bus/usb/003/002
+$ lxc config set usrp limits.kernel.rtprio 99
+
+### Change to container bash:
+$ lxc exec usrp -- bash
+(usrp) # apt-get install cmake libfftw3-dev libmbedtls-dev libboost-program-options-dev libconfig++-dev libsctp-dev
+(usrp) # git clone https://github.com/srsLTE/srsLTE.git
+(usrp) # cd srsLTE
+(usrp) # mkdir build
+(usrp) # make
+(usrp) # make install
+(usrp) # srslte_install_configs.sh
+(usrp) ## << Press CTRL+D >>
+
+## Run the srsenb
+$ lxc exec usrp -- srsenb
